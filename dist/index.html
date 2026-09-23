@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ORA双平台订单小时汇总与商品汇总工具">
+  <title>ORA 双平台报表台</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%23153f52'/%3E%3Cpath d='M16 17h32v7H16zm0 12h21v7H16zm0 12h32v7H16z' fill='%23fff'/%3E%3Ccircle cx='44' cy='32.5' r='5' fill='%23e7a93b'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+    <div>
+      <h1>ORA 双平台报表台</h1>
+      <p>订单小时汇总与商品汇总</p>
+    </div>
+    <div class="privacy"><span></span>文件仅在当前浏览器处理</div>
+  </header>
+
+  <main>
+    <section class="status-strip" aria-label="处理步骤">
+      <div class="step active"><b>1</b><span>上传数据</span></div>
+      <div class="line"></div>
+      <div class="step"><b>2</b><span>自动校验</span></div>
+      <div class="line"></div>
+      <div class="step"><b>3</b><span>下载报表</span></div>
+    </section>
+
+    <section class="workspace" aria-labelledby="upload-title">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">数据文件</p>
+          <h2 id="upload-title">上传本期Excel</h2>
+        </div>
+        <button id="clearBtn" class="quiet-btn" type="button">清空全部</button>
+      </div>
+
+      <div class="upload-groups">
+        <div class="upload-group">
+          <div class="group-title">
+            <h3>订单数据</h3>
+            <span id="orderPairStatus" class="pair-status">等待文件</span>
+          </div>
+          <div class="drop-grid">
+            <label class="dropzone" data-key="mtOrder">
+              <input type="file" accept=".xlsx,.xls" data-file-input="mtOrder">
+              <span class="platform mt">美团</span>
+              <strong>美团订单</strong>
+              <small>拖入或选择Excel</small>
+              <span class="file-state">未选择</span>
+            </label>
+            <label class="dropzone" data-key="eleOrder">
+              <input type="file" accept=".xlsx,.xls" data-file-input="eleOrder">
+              <span class="platform ele">饿了么</span>
+              <strong>饿了么订单</strong>
+              <small>拖入或选择Excel</small>
+              <span class="file-state">未选择</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="upload-group">
+          <div class="group-title">
+            <h3>商品数据</h3>
+            <span id="productPairStatus" class="pair-status">等待文件</span>
+          </div>
+          <div class="drop-grid">
+            <label class="dropzone" data-key="mtProduct">
+              <input type="file" accept=".xlsx,.xls" data-file-input="mtProduct">
+              <span class="platform mt">美团</span>
+              <strong>美团商品</strong>
+              <small>拖入或选择Excel</small>
+              <span class="file-state">未选择</span>
+            </label>
+            <label class="dropzone" data-key="eleProduct">
+              <input type="file" accept=".xlsx,.xls" data-file-input="eleProduct">
+              <span class="platform ele">饿了么</span>
+              <strong>饿了么商品</strong>
+              <small>拖入或选择Excel</small>
+              <span class="file-state">未选择</span>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div id="alert" class="alert" role="status" aria-live="polite"></div>
+
+      <div class="action-row">
+        <div class="ready-summary">
+          <span id="readyCount">0 / 4</span>
+          <small>已识别文件</small>
+        </div>
+        <button id="generateBtn" class="primary-btn" type="button" disabled>
+          <span class="btn-label">生成可用报表</span>
+          <span class="spinner" aria-hidden="true"></span>
+        </button>
+      </div>
+    </section>
+
+    <section id="results" class="results" aria-labelledby="results-title" hidden>
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">处理结果</p>
+          <h2 id="results-title">报表已生成</h2>
+        </div>
+        <span id="resultTime" class="result-time"></span>
+      </div>
+      <div id="resultCards" class="result-cards"></div>
+    </section>
+
+    <section class="rules" aria-labelledby="rules-title">
+      <div class="section-head compact">
+        <div>
+          <p class="eyebrow">当前口径</p>
+          <h2 id="rules-title">自动执行规则</h2>
+        </div>
+      </div>
+      <div class="rule-grid">
+        <div><b>订单筛选</b><span>美团剔除已取消，饿了么剔除订单无效</span></div>
+        <div><b>订单输出</b><span>明细、小时销量、小时组合、2/3品关联</span></div>
+        <div><b>商品备注</b><span>套餐、双杯、+、＋、超大杯美式4选2</span></div>
+        <div><b>文件组合</b><span>上传哪一组完整数据，就生成对应报表</span></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>ORA Coffee · 双平台运营报表</footer>
+
+  <script src="./vendor/xlsx.full.min.js"></script>
+  <script src="./vendor/exceljs.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

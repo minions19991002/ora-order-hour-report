@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: ora-report-cloud
+    runtime: static
+    buildCommand: echo "Static site ready"
+    staticPublishPath: ./dist
+    autoDeployTrigger: commit
