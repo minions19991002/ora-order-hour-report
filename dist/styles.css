@@ -108,7 +108,7 @@ main { width: min(1180px, calc(100% - 2rem)); margin: 1.6rem auto 3rem; }
 .result-card p { margin: 0.45rem 0 0; color: var(--muted); font-size: 0.78rem; line-height: 1.6; }
 .download-btn { align-self: center; border: 1px solid var(--navy); border-radius: 3px; background: white; color: var(--navy); padding: 0.58rem 0.72rem; cursor: pointer; font-weight: 700; white-space: nowrap; }
 .download-btn:hover { background: var(--navy); color: white; }
-.rule-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; margin-top: 1rem; }
+.rule-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.75rem; margin-top: 1rem; }
 .rule-grid div { padding: 0.75rem 0.8rem; border-left: 2px solid #9bb0b7; background: var(--soft); }
 .rule-grid b, .rule-grid span { display: block; }
 .rule-grid b { font-size: 0.78rem; }
