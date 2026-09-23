@@ -55,6 +55,16 @@ main { width: min(1180px, calc(100% - 2rem)); margin: 1.6rem auto 3rem; }
 .quiet-btn { border: 0; background: transparent; color: var(--navy-2); padding: 0.45rem; cursor: pointer; }
 .quiet-btn:hover { text-decoration: underline; }
 
+.bulk-dropzone { min-height: 5.4rem; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 0.9rem; margin-top: 1.15rem; padding: 0.9rem 1rem; border: 1px dashed #7f9ba6; background: #f3f8f9; cursor: pointer; transition: border-color .18s, background .18s; }
+.bulk-dropzone:hover, .bulk-dropzone.dragover { border-color: var(--navy); background: #eaf3f5; }
+.bulk-dropzone.processing { opacity: .68; pointer-events: none; }
+.bulk-dropzone input { position: absolute; opacity: 0; pointer-events: none; }
+.bulk-icon { display: grid; place-items: center; width: 2.4rem; height: 2.4rem; border-radius: 50%; background: var(--navy); color: white; font-size: 1.3rem; font-weight: 800; }
+.bulk-copy strong, .bulk-copy small { display: block; }
+.bulk-copy strong { font-size: 0.94rem; }
+.bulk-copy small { margin-top: 0.25rem; color: var(--muted); font-size: 0.76rem; }
+.bulk-action { border: 1px solid var(--navy); border-radius: 3px; background: white; color: var(--navy); padding: 0.55rem 0.7rem; font-size: 0.78rem; font-weight: 700; white-space: nowrap; }
+
 .upload-groups { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-top: 1.25rem; }
 .upload-group { min-width: 0; }
 .group-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.72rem; }
@@ -115,6 +125,8 @@ footer { padding: 1.5rem; text-align: center; color: #74868d; font-size: 0.75rem
   .topbar { padding-inline: 1rem; }
   .status-strip { display: none; }
   .workspace, .results, .rules { padding: 1rem; }
+  .bulk-dropzone { grid-template-columns: auto 1fr; }
+  .bulk-action { grid-column: 1 / -1; width: 100%; text-align: center; }
   .drop-grid, .rule-grid { grid-template-columns: 1fr; }
   .dropzone { min-height: 8.2rem; }
   .action-row { justify-content: stretch; }

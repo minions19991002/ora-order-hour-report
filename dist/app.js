@@ -33,6 +33,8 @@ const PRODUCT_COLUMNS = ["日期", "平台", "门店名称", "门店id", "商品
 const els = {
   generate: document.getElementById("generateBtn"),
   clear: document.getElementById("clearBtn"),
+  bulkInput: document.getElementById("bulkInput"),
+  bulkDropzone: document.getElementById("bulkDropzone"),
   alert: document.getElementById("alert"),
   readyCount: document.getElementById("readyCount"),
   orderPairStatus: document.getElementById("orderPairStatus"),
@@ -44,6 +46,27 @@ const els = {
 
 document.querySelectorAll("[data-file-input]").forEach((input) => {
   input.addEventListener("change", () => input.files[0] && loadFile(input.dataset.fileInput, input.files[0]));
+});
+
+els.bulkInput.addEventListener("change", () => {
+  if (els.bulkInput.files.length) loadBulkFiles([...els.bulkInput.files]);
+});
+
+for (const name of ["dragenter", "dragover"]) {
+  els.bulkDropzone.addEventListener(name, (event) => {
+    event.preventDefault();
+    els.bulkDropzone.classList.add("dragover");
+  });
+}
+for (const name of ["dragleave", "drop"]) {
+  els.bulkDropzone.addEventListener(name, (event) => {
+    event.preventDefault();
+    els.bulkDropzone.classList.remove("dragover");
+  });
+}
+els.bulkDropzone.addEventListener("drop", (event) => {
+  const files = [...event.dataTransfer.files];
+  if (files.length) loadBulkFiles(files);
 });
 
 document.querySelectorAll(".dropzone").forEach((zone) => {
@@ -107,12 +130,68 @@ function clearAll() {
     zone.querySelector(".file-state").textContent = "未选择";
     zone.querySelector("input").value = "";
   }
+  els.bulkInput.value = "";
   for (const result of state.results) URL.revokeObjectURL(result.url);
   state.results = [];
   els.results.hidden = true;
   els.resultCards.replaceChildren();
   hideAlert();
   updateUi();
+}
+
+function applyLoadedFile(key, file, parsed) {
+  const zone = document.querySelector(`[data-key="${key}"]`);
+  const fileState = zone.querySelector(".file-state");
+  state.files[key] = file;
+  state.parsed[key] = parsed;
+  zone.classList.remove("invalid");
+  zone.classList.add("loaded");
+  const range = parsed.dateMin && parsed.dateMax ? ` · ${parsed.dateMin} 至 ${parsed.dateMax}` : "";
+  fileState.textContent = `${file.name} · ${parsed.rows.length.toLocaleString()}行${range}`;
+}
+
+async function loadBulkFiles(files) {
+  const excelFiles = files.filter((file) => /\.xlsx?$/i.test(file.name));
+  if (!excelFiles.length) {
+    showAlert("请选择 .xlsx 或 .xls 文件", "error");
+    return;
+  }
+  els.bulkDropzone.classList.add("processing");
+  els.bulkDropzone.querySelector(".bulk-action").textContent = `正在识别 0 / ${excelFiles.length}`;
+  hideAlert();
+  const loaded = [];
+  const failed = [];
+  try {
+    for (let index = 0; index < excelFiles.length; index += 1) {
+      const file = excelFiles[index];
+      els.bulkDropzone.querySelector(".bulk-action").textContent = `正在识别 ${index + 1} / ${excelFiles.length}`;
+      let matched = false;
+      for (const [key, spec] of Object.entries(FILE_SPECS)) {
+        try {
+          const parsed = await parseWorkbook(file, spec.required);
+          applyLoadedFile(key, file, parsed);
+          loaded.push(spec.label);
+          matched = true;
+          break;
+        } catch {
+          // Continue checking the remaining known source formats.
+        }
+      }
+      if (!matched) failed.push(file.name);
+      updateUi();
+      await nextFrame();
+    }
+    if (failed.length) {
+      showAlert(`已识别${loaded.length}个文件；以下文件无法按现有表头识别：${failed.join("、")}`, "error");
+    } else {
+      showAlert(`已自动识别：${loaded.join("、")}。可直接生成报表，也可以单独替换文件。`);
+    }
+  } finally {
+    els.bulkDropzone.classList.remove("processing");
+    els.bulkDropzone.querySelector(".bulk-action").textContent = "选择多个Excel";
+    els.bulkInput.value = "";
+    updateUi();
+  }
 }
 
 async function loadFile(key, file) {
@@ -124,11 +203,7 @@ async function loadFile(key, file) {
   try {
     if (!/\.xlsx?$/i.test(file.name)) throw new Error("请选择 .xlsx 或 .xls 文件");
     const parsed = await parseWorkbook(file, FILE_SPECS[key].required);
-    state.files[key] = file;
-    state.parsed[key] = parsed;
-    zone.classList.add("loaded");
-    const range = parsed.dateMin && parsed.dateMax ? ` · ${parsed.dateMin} 至 ${parsed.dateMax}` : "";
-    fileState.textContent = `${file.name} · ${parsed.rows.length.toLocaleString()}行${range}`;
+    applyLoadedFile(key, file, parsed);
   } catch (error) {
     state.files[key] = null;
     delete state.parsed[key];
