@@ -12,6 +12,7 @@ const state = {
   parsed: {},
   results: [],
   busy: false,
+  bucketSettings: { min: 20, max: 80, step: 5 },
 };
 
 const MT_PRICE_QTY_RE = /,单价([\d.]+)\*数量(\d+(?:\.\d+)?)/g;
@@ -35,6 +36,12 @@ const els = {
   clear: document.getElementById("clearBtn"),
   bulkInput: document.getElementById("bulkInput"),
   bulkDropzone: document.getElementById("bulkDropzone"),
+  bucketMin: document.getElementById("bucketMin"),
+  bucketMax: document.getElementById("bucketMax"),
+  bucketStep: document.getElementById("bucketStep"),
+  bucketPreview: document.getElementById("bucketPreview"),
+  bucketSettings: document.querySelector(".bucket-settings"),
+  resetBucket: document.getElementById("resetBucketBtn"),
   alert: document.getElementById("alert"),
   readyCount: document.getElementById("readyCount"),
   orderPairStatus: document.getElementById("orderPairStatus"),
@@ -86,6 +93,13 @@ document.querySelectorAll(".dropzone").forEach((zone) => {
 
 els.generate.addEventListener("click", generateAvailableReports);
 els.clear.addEventListener("click", clearAll);
+for (const input of [els.bucketMin, els.bucketMax, els.bucketStep]) input.addEventListener("input", updateBucketPreview);
+els.resetBucket.addEventListener("click", () => {
+  els.bucketMin.value = "20";
+  els.bucketMax.value = "80";
+  els.bucketStep.value = "5";
+  updateBucketPreview();
+});
 
 function showAlert(message, type = "info") {
   els.alert.textContent = message;
@@ -292,6 +306,46 @@ function dateTimeText(value) {
 function hourOf(value) { const date = excelDate(value); return date ? date.getHours() : ""; }
 function round2(value) { return Math.round((Number(value) + Number.EPSILON) * 100) / 100; }
 function tidyNumber(value) { return Number.isInteger(value) ? value : Number(value.toFixed(4)); }
+function boundaryText(value) { return String(tidyNumber(Number(value))); }
+
+function readBucketSettings() {
+  const settings = {
+    min: Number(els.bucketMin.value),
+    max: Number(els.bucketMax.value),
+    step: Number(els.bucketStep.value),
+  };
+  if (!Number.isFinite(settings.min) || settings.min < 0) throw new Error("营业额区间最小值必须大于或等于0");
+  if (!Number.isFinite(settings.max) || settings.max <= settings.min) throw new Error("营业额区间最大值必须大于最小值");
+  if (!Number.isFinite(settings.step) || settings.step <= 0) throw new Error("营业额区间步长必须大于0");
+  if (Math.ceil((settings.max - settings.min) / settings.step) > 100) throw new Error("营业额区间数量不能超过100个，请增大步长");
+  return settings;
+}
+
+function bucketLabels(settings) {
+  const labels = settings.min > 0 ? [`[0,${boundaryText(settings.min)}）`] : [];
+  let lower = settings.min;
+  let index = 0;
+  while (lower < settings.max - 1e-9) {
+    const upper = Math.min(lower + settings.step, settings.max);
+    labels.push(`[${boundaryText(lower)},${boundaryText(upper)}${index === 0 ? "）" : ")"}`);
+    lower = upper;
+    index += 1;
+  }
+  labels.push(`[${boundaryText(settings.max)},~)`);
+  return labels;
+}
+
+function updateBucketPreview() {
+  try {
+    const settings = readBucketSettings();
+    state.bucketSettings = settings;
+    els.bucketSettings.classList.remove("invalid");
+    els.bucketPreview.textContent = bucketLabels(settings).join("、");
+  } catch (error) {
+    els.bucketSettings.classList.add("invalid");
+    els.bucketPreview.textContent = error.message;
+  }
+}
 
 function normalizeProductName(rawName) {
   let name = text(rawName);
@@ -358,10 +412,14 @@ function comboFromItems(items) {
 }
 
 function revenueBucket(value) {
-  if (value >= 0 && value < 20) return "[0,20）";
-  if (value >= 20 && value < 25) return "[20,25）";
-  for (let lower = 25; lower < 80; lower += 5) if (value >= lower && value < lower + 5) return `[${lower},${lower + 5})`;
-  return value >= 80 ? "[80,~)" : "";
+  const { min, max, step } = state.bucketSettings;
+  if (value < 0) return "";
+  if (value < min) return `[0,${boundaryText(min)}）`;
+  if (value >= max) return `[${boundaryText(max)},~)`;
+  const index = Math.floor((value - min) / step);
+  const lower = min + index * step;
+  const upper = Math.min(lower + step, max);
+  return `[${boundaryText(lower)},${boundaryText(upper)}${index === 0 ? "）" : ")"}`;
 }
 
 function keyOf(parts) { return JSON.stringify(parts); }
@@ -540,6 +598,13 @@ async function generateAvailableReports() {
   const orderPair = state.files.mtOrder && state.files.eleOrder;
   const productPair = state.files.mtProduct && state.files.eleProduct;
   if (!orderPair && !productPair) return;
+  try {
+    state.bucketSettings = readBucketSettings();
+    updateBucketPreview();
+  } catch (error) {
+    showAlert(error.message, "error");
+    return;
+  }
   const partialOrder = Boolean(state.files.mtOrder) !== Boolean(state.files.eleOrder);
   const partialProduct = Boolean(state.files.mtProduct) !== Boolean(state.files.eleProduct);
   if (partialOrder || partialProduct) {
@@ -671,5 +736,6 @@ function registerWebMcp() {
 }
 
 updateUi();
+updateBucketPreview();
 registerWebMcp();
 window.__ORA_REPORT_APP__ = { state, parseMeituanItems, parseEleItems, normalizeProductName, revenueBucket, processOrders, processProducts };

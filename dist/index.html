@@ -94,6 +94,21 @@
         </div>
       </div>
 
+      <section class="bucket-settings" aria-labelledby="bucket-title">
+        <div class="bucket-heading">
+          <div>
+            <h3 id="bucket-title">营业额区间设置</h3>
+            <small id="bucketPreview"></small>
+          </div>
+          <button id="resetBucketBtn" class="quiet-btn" type="button">恢复默认</button>
+        </div>
+        <div class="bucket-controls">
+          <label>最小值<input id="bucketMin" type="number" min="0" step="any" value="20"></label>
+          <label>最大值<input id="bucketMax" type="number" min="0" step="any" value="80"></label>
+          <label>步长<input id="bucketStep" type="number" min="0.01" step="any" value="5"></label>
+        </div>
+      </section>
+
       <div id="alert" class="alert" role="status" aria-live="polite"></div>
 
       <div class="action-row">
@@ -130,6 +145,7 @@
         <div><b>订单筛选</b><span>美团剔除已取消，饿了么剔除订单无效</span></div>
         <div><b>订单输出</b><span>明细、小时销量、小时组合、2/3品关联</span></div>
         <div><b>关联搭配</b><span>商品A、商品B、商品C各为一个完整商品，名称中的+不拆分</span></div>
+        <div><b>营业额区间</b><span>默认最小值20、最大值80、步长5，生成前可调整</span></div>
         <div><b>商品备注</b><span>套餐、双杯、+、＋、超大杯美式4选2</span></div>
         <div><b>文件组合</b><span>上传哪一组完整数据，就生成对应报表</span></div>
       </div>
