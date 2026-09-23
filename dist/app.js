@@ -474,39 +474,31 @@ function combinations(items, size) {
 
 function buildAssociations(seeds) {
   const dates = [...new Set(seeds.map((row) => row.date).filter(Boolean))].sort();
-  if (dates.length < 2) return { tables: [], note: "日期不足2天，未生成关联搭配表" };
-  const split = Math.floor(dates.length / 2);
-  const priorDates = new Set(dates.slice(0, split));
-  const currentDates = new Set(dates.slice(split));
-  const priorLabel = `${dates[0]}至${dates[split - 1]}`;
-  const currentLabel = `${dates[split]}至${dates.at(-1)}`;
+  if (!dates.length) return { tables: [], note: "没有可用于关联搭配统计的日期" };
   const tables = [];
   for (const size of [2, 3]) {
     const counts = new Map();
     for (const seed of seeds) {
-      const period = currentDates.has(seed.date) ? "current" : priorDates.has(seed.date) ? "prior" : null;
-      if (!period || seed.names.length < size) continue;
+      if (!seed.date || seed.names.length < size) continue;
       for (const products of combinations(seed.names, size)) {
-        const key = keyOf([seed.platform, seed.storeId, seed.storeName, ...products]);
-        const entry = counts.get(key) || { platform: seed.platform, storeId: seed.storeId, storeName: seed.storeName, products, current: 0, prior: 0 };
-        entry[period] += 1;
+        const key = keyOf([seed.date, seed.platform, seed.storeId, seed.storeName, ...products]);
+        const entry = counts.get(key) || { date: seed.date, platform: seed.platform, storeId: seed.storeId, storeName: seed.storeName, products, count: 0 };
+        entry.count += 1;
         counts.set(key, entry);
       }
     }
     const productColumns = Array.from({ length: size }, (_, index) => `商品${String.fromCharCode(65 + index)}`);
-    const columns = ["平台", "门店ID", "门店名称", ...productColumns, "合计", `本期共同出现订单数（${currentLabel}）`, `上期共同出现订单数（${priorLabel}）`, "差值"];
+    const columns = ["日期", "平台", "门店ID", "门店名称", ...productColumns, "合计", "共同出现订单数"];
     const rows = [...counts.values()].map((entry) => {
-      const row = { "平台": entry.platform, "门店ID": entry.storeId, "门店名称": entry.storeName, "合计": entry.products.join("+") };
+      const row = { "日期": entry.date, "平台": entry.platform, "门店ID": entry.storeId, "门店名称": entry.storeName, "合计": entry.products.join("+") };
       productColumns.forEach((column, index) => { row[column] = entry.products[index]; });
-      row[`本期共同出现订单数（${currentLabel}）`] = entry.current;
-      row[`上期共同出现订单数（${priorLabel}）`] = entry.prior;
-      row["差值"] = entry.current - entry.prior;
+      row["共同出现订单数"] = entry.count;
       return row;
     });
-    rows.sort((a, b) => b[`本期共同出现订单数（${currentLabel}）`] - a[`本期共同出现订单数（${currentLabel}）`] || a["平台"].localeCompare(b["平台"], "zh-CN") || a["门店名称"].localeCompare(b["门店名称"], "zh-CN") || a["合计"].localeCompare(b["合计"], "zh-CN"));
+    rows.sort((a, b) => a["日期"].localeCompare(b["日期"]) || b["共同出现订单数"] - a["共同出现订单数"] || a["平台"].localeCompare(b["平台"], "zh-CN") || a["门店名称"].localeCompare(b["门店名称"], "zh-CN") || a["合计"].localeCompare(b["合计"], "zh-CN"));
     tables.push({ name: `${size}个品强关联搭配`, columns, rows });
   }
-  return { tables, note: `关联搭配按${priorLabel}与${currentLabel}对比` };
+  return { tables, note: `关联搭配按${dates[0]}至${dates.at(-1)}逐日统计` };
 }
 
 function processProducts() {
@@ -631,7 +623,7 @@ function columnWidth(column) {
     "区间": 12, "订单数": 10, "销量": 10, "销售额": 13, "商品销量": 12, "商品销售额": 14, "备注": 10,
     "商品A": 34, "商品B": 34, "商品C": 34, "合计": 64, "差值": 10,
   };
-  if (column.startsWith("本期共同") || column.startsWith("上期共同")) return 31;
+  if (column === "共同出现订单数") return 18;
   return widths[column] || 16;
 }
 
