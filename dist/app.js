@@ -1,10 +1,32 @@
 "use strict";
 
 const FILE_SPECS = {
-  mtOrder: { label: "美团订单", kind: "order", platform: "美团", required: ["日期", "门店id", "门店名称", "商品信息", "下单时间", "订单状态", "订单编号"] },
-  eleOrder: { label: "饿了么订单", kind: "order", platform: "饿了么", required: ["日期", "门店编号", "门店名称", "商品信息", "下单时间", "订单状态", "订单单号"] },
+  mtOrder: { label: "美团订单", kind: "order", platform: "美团", required: ["日期", "门店id", "门店名称", "商品信息", "下单时间", "订单状态", "订单编号"], optional: ["门店所在城市", "订单实付", "商品原价", "包装费", "活动信息", "神抢手用券核销订单", "神抢手一口价商品订单"] },
+  eleOrder: { label: "饿了么订单", kind: "order", platform: "饿了么", required: ["日期", "门店编号", "门店名称", "商品信息", "下单时间", "订单状态", "订单单号"], optional: ["门店所在城市", "顾客实付", "菜品原价", "餐盒费"] },
   mtProduct: { label: "美团商品", kind: "product", platform: "美团", required: ["日期", "商品名", "门店名称", "门店id", "商品销量", "商品销售额"] },
   eleProduct: { label: "饿了么商品", kind: "product", platform: "饿了么", required: ["日期", "商品名称", "门店名称", "门店编号", "销量", "销售额"] },
+};
+
+const HEADER_ALIASES = {
+  "日期": ["统计日期", "交易日期", "下单日期"],
+  "门店名称": ["门店名", "店铺名称", "店铺名"],
+  "门店id": ["门店ID", "门店编号", "店铺ID", "店铺编号"],
+  "门店编号": ["门店ID", "门店id", "店铺编号", "店铺ID"],
+  "商品名": ["商品名称", "菜品名称", "菜品名"],
+  "商品名称": ["商品名", "菜品名称", "菜品名"],
+  "商品销量": ["销量", "销售数量", "售出数量"],
+  "销量": ["商品销量", "销售数量", "售出数量"],
+  "商品销售额": ["销售额", "销售金额", "商品销售金额"],
+  "销售额": ["商品销售额", "销售金额", "商品销售金额"],
+  "订单编号": ["订单单号", "订单号"],
+  "订单单号": ["订单编号", "订单号"],
+  "门店所在城市": ["城市", "城市名称", "门店城市"],
+  "订单实付": ["顾客实付", "用户实付", "订单实际支付"],
+  "顾客实付": ["订单实付", "用户实付", "订单实际支付"],
+  "商品原价": ["菜品原价", "商品原价金额"],
+  "菜品原价": ["商品原价", "商品原价金额"],
+  "包装费": ["餐盒费", "打包费"],
+  "餐盒费": ["包装费", "打包费"],
 };
 
 const state = {
@@ -161,7 +183,10 @@ function applyLoadedFile(key, file, parsed) {
   zone.classList.remove("invalid");
   zone.classList.add("loaded");
   const range = parsed.dateMin && parsed.dateMax ? ` · ${parsed.dateMin} 至 ${parsed.dateMax}` : "";
-  fileState.textContent = `${file.name} · ${parsed.rows.length.toLocaleString()}行${range}`;
+  const rowCount = parsed.rawRowCount && parsed.rawRowCount !== parsed.rows.length
+    ? `${parsed.rows.length.toLocaleString()}行可用数据 / ${parsed.rawRowCount.toLocaleString()}行源数据`
+    : `${parsed.rows.length.toLocaleString()}行`;
+  fileState.textContent = `${file.name} · ${rowCount}${range}`;
 }
 
 async function loadBulkFiles(files) {
@@ -180,16 +205,13 @@ async function loadBulkFiles(files) {
       const file = excelFiles[index];
       els.bulkDropzone.querySelector(".bulk-action").textContent = `正在识别 ${index + 1} / ${excelFiles.length}`;
       let matched = false;
-      for (const [key, spec] of Object.entries(FILE_SPECS)) {
-        try {
-          const parsed = await parseWorkbook(file, spec.required);
-          applyLoadedFile(key, file, parsed);
-          loaded.push(spec.label);
-          matched = true;
-          break;
-        } catch {
-          // Continue checking the remaining known source formats.
-        }
+      try {
+        const identified = await parseWorkbook(file, Object.entries(FILE_SPECS));
+        applyLoadedFile(identified.key, file, identified.parsed);
+        loaded.push(FILE_SPECS[identified.key].label);
+        matched = true;
+      } catch {
+        // Report all files that do not contain a recognizable order or product dataset.
       }
       if (!matched) failed.push(file.name);
       updateUi();
@@ -216,8 +238,8 @@ async function loadFile(key, file) {
   hideAlert();
   try {
     if (!/\.xlsx?$/i.test(file.name)) throw new Error("请选择 .xlsx 或 .xls 文件");
-    const parsed = await parseWorkbook(file, FILE_SPECS[key].required);
-    applyLoadedFile(key, file, parsed);
+    const identified = await parseWorkbook(file, [[key, FILE_SPECS[key]]]);
+    applyLoadedFile(key, file, identified.parsed);
   } catch (error) {
     state.files[key] = null;
     delete state.parsed[key];
@@ -228,28 +250,274 @@ async function loadFile(key, file) {
   updateUi();
 }
 
-async function parseWorkbook(file, requiredHeaders) {
+async function parseWorkbook(file, specEntries) {
+  if (/\.xlsx$/i.test(file.name) && file.size >= 40 * 1024 * 1024) return parseLargeXlsx(file, specEntries);
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: "array", cellDates: true, cellNF: false, cellText: false });
+  let best = null;
   for (const sheetName of workbook.SheetNames) {
     const sheet = workbook.Sheets[sheetName];
     repairSheetRef(sheet);
     const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null, raw: true, blankrows: false });
-    const headerIndex = matrix.findIndex((row) => {
-      const set = new Set((row || []).map((value) => text(value)));
-      return requiredHeaders.every((header) => set.has(header));
-    });
-    if (headerIndex < 0) continue;
-    const headers = matrix[headerIndex].map((value) => text(value));
-    const rows = matrix.slice(headerIndex + 1).filter((row) => row.some((value) => value !== null && value !== "")).map((row) => {
-      const record = {};
-      headers.forEach((header, index) => { if (header) record[header] = row[index]; });
-      return record;
-    });
-    const dates = rows.map((row) => dateText(row["日期"])).filter(Boolean).sort();
-    return { sheetName, headers, rows, dateMin: dates[0] || "", dateMax: dates.at(-1) || "" };
+    for (let headerIndex = 0; headerIndex < Math.min(matrix.length, 50); headerIndex += 1) {
+      const candidate = bestHeaderCandidate(matrix[headerIndex], specEntries, file.name);
+      if (candidate && (!best || candidate.score > best.score)) best = { ...candidate, sheetName, matrix, headerIndex };
+    }
   }
-  throw new Error(`未找到必需字段：${requiredHeaders.join("、")}`);
+  if (!best && /\.xlsx$/i.test(file.name)) return parseLargeXlsx(file, specEntries);
+  if (!best) throw unrecognizedWorkbookError(specEntries);
+  return { key: best.key, parsed: parsedFromMatrix(best) };
+}
+
+function normalizeHeader(value) {
+  return text(value).toLowerCase().replace(/[\s_]+/g, "").replace(/[（(][^）)]*[）)]/g, "").replace(/[：:]/g, "");
+}
+
+function headerAliases(target) {
+  return [target, ...(HEADER_ALIASES[target] || [])].map(normalizeHeader);
+}
+
+function headerMapping(headers, spec) {
+  const normalized = headers.map(normalizeHeader);
+  const mapping = new Map();
+  let score = 0;
+  for (const target of spec.required) {
+    const aliases = headerAliases(target);
+    const exact = normalized.indexOf(normalizeHeader(target));
+    const index = exact >= 0 ? exact : normalized.findIndex((header) => aliases.includes(header));
+    if (index < 0) return null;
+    mapping.set(target, index);
+    score += exact >= 0 ? 4 : 1;
+  }
+  for (const target of spec.optional || []) {
+    const aliases = headerAliases(target);
+    const exact = normalized.indexOf(normalizeHeader(target));
+    const index = exact >= 0 ? exact : normalized.findIndex((header) => aliases.includes(header));
+    if (index >= 0) mapping.set(target, index);
+  }
+  return { mapping, score };
+}
+
+function filenameScore(filename, spec) {
+  const name = filename.toLowerCase();
+  if (name.includes(spec.platform.toLowerCase())) return 3;
+  if (spec.platform === "饿了么" && /(?:订单|商品)下载/.test(name)) return 2;
+  if (spec.platform === "美团" && /(?:订单|商品)_全部门店|mtora/.test(name)) return 2;
+  return 0;
+}
+
+function bestHeaderCandidate(row, specEntries, filename) {
+  const headers = (row || []).map((value) => text(value));
+  let best = null;
+  for (const [key, spec] of specEntries) {
+    const match = headerMapping(headers, spec);
+    if (!match) continue;
+    const score = match.score + filenameScore(filename, spec);
+    if (!best || score > best.score) best = { key, spec, headers, mapping: match.mapping, score };
+  }
+  return best;
+}
+
+function mappedRecord(row, mapping) {
+  const record = {};
+  for (const [target, index] of mapping) record[target] = row[index];
+  return record;
+}
+
+function parsedResult(sheetName, headers, rows) {
+  let dateMin = "";
+  let dateMax = "";
+  for (const row of rows) {
+    const date = dateText(row["日期"]);
+    if (!date) continue;
+    if (!dateMin || date < dateMin) dateMin = date;
+    if (!dateMax || date > dateMax) dateMax = date;
+  }
+  return { sheetName, headers, rows, dateMin, dateMax };
+}
+
+function parsedFromMatrix(candidate) {
+  const rows = candidate.matrix.slice(candidate.headerIndex + 1)
+    .filter((row) => row.some((value) => value !== null && value !== ""))
+    .map((row) => mappedRecord(row, candidate.mapping));
+  return parsedResult(candidate.sheetName, [...candidate.mapping.keys()], rows);
+}
+
+function unrecognizedWorkbookError(specEntries) {
+  const fields = [...new Set(specEntries.flatMap(([, spec]) => spec.required))];
+  return new Error(`未识别到可用数据字段，请检查文件内容。可识别字段包括：${fields.join("、")}`);
+}
+
+async function parseLargeXlsx(file, specEntries) {
+  if (typeof DecompressionStream === "undefined") throw new Error("当前浏览器不支持超大Excel流式读取，请使用最新版Chrome或Edge");
+  const entries = await zipEntries(file);
+  const entryByName = new Map(entries.map((entry) => [entry.name, entry]));
+  const sharedEntry = entryByName.get("xl/sharedStrings.xml");
+  const sharedStrings = sharedEntry ? parseSharedStrings(await zipEntryText(file, sharedEntry)) : [];
+  const sheetNames = await workbookSheetNames(file, entryByName);
+  const worksheetEntries = entries
+    .filter((entry) => /^xl\/worksheets\/sheet\d+\.xml$/.test(entry.name))
+    .sort((a, b) => Number(a.name.match(/sheet(\d+)/)[1]) - Number(b.name.match(/sheet(\d+)/)[1]));
+
+  for (const entry of worksheetEntries) {
+    let candidate = null;
+    let wanted = null;
+    let inspectedRows = 0;
+    let rawRowCount = 0;
+    let preExcludedCount = 0;
+    const rows = [];
+    await consumeWorksheetRows(file, entry, sharedStrings, () => wanted, (row) => {
+      if (!candidate) {
+        inspectedRows += 1;
+        candidate = bestHeaderCandidate(row, specEntries, file.name);
+        if (candidate) wanted = new Set(candidate.mapping.values());
+        return Boolean(candidate) || inspectedRows < 50;
+      }
+      if (!row.some((value) => value !== null && value !== "" && value !== undefined)) return true;
+      rawRowCount += 1;
+      const record = mappedRecord(row, candidate.mapping);
+      if (candidate.spec.kind === "product") {
+        const productField = candidate.key === "mtProduct" ? "商品名" : "商品名称";
+        const quantityField = candidate.key === "mtProduct" ? "商品销量" : "销量";
+        if (!text(record[productField]) || number(record[quantityField]) === 0) {
+          preExcludedCount += 1;
+          return true;
+        }
+      }
+      rows.push(record);
+      return true;
+    });
+    if (!candidate) continue;
+    const sheetNumber = Number(entry.name.match(/sheet(\d+)/)[1]);
+    const parsed = parsedResult(sheetNames.get(sheetNumber) || `sheet${sheetNumber}`, [...candidate.mapping.keys()], rows);
+    parsed.rawRowCount = rawRowCount;
+    parsed.preExcludedCount = preExcludedCount;
+    return { key: candidate.key, parsed };
+  }
+  throw unrecognizedWorkbookError(specEntries);
+}
+
+async function zipEntries(file) {
+  const tailSize = Math.min(file.size, 65557);
+  const tail = new Uint8Array(await file.slice(file.size - tailSize).arrayBuffer());
+  let eocd = -1;
+  for (let index = tail.length - 22; index >= 0; index -= 1) {
+    if (tail[index] === 0x50 && tail[index + 1] === 0x4b && tail[index + 2] === 0x05 && tail[index + 3] === 0x06) { eocd = index; break; }
+  }
+  if (eocd < 0) throw new Error("Excel文件结构不完整，未找到ZIP目录");
+  const tailView = new DataView(tail.buffer, tail.byteOffset, tail.byteLength);
+  const directorySize = tailView.getUint32(eocd + 12, true);
+  const directoryOffset = tailView.getUint32(eocd + 16, true);
+  const bytes = new Uint8Array(await file.slice(directoryOffset, directoryOffset + directorySize).arrayBuffer());
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoder = new TextDecoder("utf-8");
+  const entries = [];
+  let offset = 0;
+  while (offset + 46 <= bytes.length && view.getUint32(offset, true) === 0x02014b50) {
+    const nameLength = view.getUint16(offset + 28, true);
+    const extraLength = view.getUint16(offset + 30, true);
+    const commentLength = view.getUint16(offset + 32, true);
+    entries.push({
+      name: decoder.decode(bytes.slice(offset + 46, offset + 46 + nameLength)),
+      method: view.getUint16(offset + 10, true),
+      compressedSize: view.getUint32(offset + 20, true),
+      uncompressedSize: view.getUint32(offset + 24, true),
+      localOffset: view.getUint32(offset + 42, true),
+    });
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+async function zipEntryStream(file, entry) {
+  const local = new DataView(await file.slice(entry.localOffset, entry.localOffset + 30).arrayBuffer());
+  if (local.getUint32(0, true) !== 0x04034b50) throw new Error(`Excel文件结构不完整：${entry.name}`);
+  const dataOffset = entry.localOffset + 30 + local.getUint16(26, true) + local.getUint16(28, true);
+  const compressed = file.slice(dataOffset, dataOffset + entry.compressedSize).stream();
+  if (entry.method === 0) return compressed;
+  if (entry.method === 8) return compressed.pipeThrough(new DecompressionStream("deflate-raw"));
+  throw new Error(`暂不支持Excel压缩方式：${entry.method}`);
+}
+
+async function zipEntryText(file, entry) {
+  return new TextDecoder("utf-8").decode(await new Response(await zipEntryStream(file, entry)).arrayBuffer());
+}
+
+function parseSharedStrings(xml) {
+  const documentXml = new DOMParser().parseFromString(xml, "application/xml");
+  return [...documentXml.getElementsByTagName("si")].map((item) => item.textContent || "");
+}
+
+async function workbookSheetNames(file, entryByName) {
+  const result = new Map();
+  const workbookEntry = entryByName.get("xl/workbook.xml");
+  const relationshipsEntry = entryByName.get("xl/_rels/workbook.xml.rels");
+  if (!workbookEntry || !relationshipsEntry) return result;
+  const workbookXml = new DOMParser().parseFromString(await zipEntryText(file, workbookEntry), "application/xml");
+  const relationshipsXml = new DOMParser().parseFromString(await zipEntryText(file, relationshipsEntry), "application/xml");
+  const paths = new Map([...relationshipsXml.getElementsByTagName("Relationship")].map((item) => [item.getAttribute("Id"), item.getAttribute("Target")]));
+  for (const sheet of workbookXml.getElementsByTagName("sheet")) {
+    const target = paths.get(sheet.getAttribute("r:id"));
+    const match = target && target.match(/sheet(\d+)\.xml$/);
+    if (match) result.set(Number(match[1]), sheet.getAttribute("name"));
+  }
+  return result;
+}
+
+async function consumeWorksheetRows(file, entry, sharedStrings, wantedIndices, onRow) {
+  const reader = (await zipEntryStream(file, entry)).getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  let keepReading = true;
+  while (keepReading) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    let start = buffer.search(/<row\b/);
+    let end = start >= 0 ? buffer.indexOf("</row>", start) : -1;
+    while (start >= 0 && end >= 0) {
+      const rowXml = buffer.slice(start, end + 6);
+      keepReading = onRow(parseXmlRow(rowXml, sharedStrings, wantedIndices())) !== false;
+      buffer = buffer.slice(end + 6);
+      if (!keepReading) break;
+      start = buffer.search(/<row\b/);
+      end = start >= 0 ? buffer.indexOf("</row>", start) : -1;
+    }
+    if (start > 0) buffer = buffer.slice(start);
+    else if (start < 0 && buffer.length > 256) buffer = buffer.slice(-256);
+    if (done) break;
+  }
+  if (!keepReading) await reader.cancel();
+}
+
+function parseXmlRow(xml, sharedStrings, wanted) {
+  const row = [];
+  const cellPattern = /<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g;
+  for (const match of xml.matchAll(cellPattern)) {
+    const attributes = match[1];
+    const reference = attributes.match(/\br="([A-Z]+)\d+"/);
+    if (!reference) continue;
+    const index = columnIndex(reference[1]);
+    if (wanted && !wanted.has(index)) continue;
+    const body = match[2] || "";
+    const type = attributes.match(/\bt="([^"]+)"/)?.[1] || "n";
+    const raw = body.match(/<v>([\s\S]*?)<\/v>/)?.[1] ?? "";
+    if (type === "s") row[index] = sharedStrings[Number(raw)] ?? "";
+    else if (type === "inlineStr") row[index] = [...body.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((item) => decodeXml(item[1])).join("");
+    else if (type === "str") row[index] = decodeXml(raw);
+    else if (raw === "") row[index] = "";
+    else row[index] = Number.isFinite(Number(raw)) ? Number(raw) : decodeXml(raw);
+  }
+  return row;
+}
+
+function columnIndex(letters) {
+  let result = 0;
+  for (const letter of letters) result = result * 26 + letter.charCodeAt(0) - 64;
+  return result - 1;
+}
+
+function decodeXml(value) {
+  return value.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 }
 
 function repairSheetRef(sheet) {
@@ -568,8 +836,10 @@ function processProducts() {
     { key: "eleProduct", platform: "饿了么", product: "商品名称", id: "门店编号", qty: "销量", sales: "销售额" },
   ];
   for (const source of sources) {
-    for (const row of state.parsed[source.key].rows) {
-      rawRows += 1;
+    const parsed = state.parsed[source.key];
+    rawRows += parsed.rawRowCount ?? parsed.rows.length;
+    excluded += parsed.preExcludedCount ?? 0;
+    for (const row of parsed.rows) {
       const product = text(row[source.product]);
       const qty = number(row[source.qty]);
       if (!product || product === "需要餐具" || product === "不需要餐具" || qty === 0) { excluded += 1; continue; }
