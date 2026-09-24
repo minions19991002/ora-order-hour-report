@@ -6,7 +6,7 @@
   <meta name="description" content="ORA双平台订单小时汇总与商品汇总工具">
   <title>ORA 双平台报表台</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%23153f52'/%3E%3Cpath d='M16 17h32v7H16zm0 12h21v7H16zm0 12h32v7H16z' fill='%23fff'/%3E%3Ccircle cx='44' cy='32.5' r='5' fill='%23e7a93b'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles.css?v=20260924-1">
+  <link rel="stylesheet" href="./styles.css?v=20260924-2">
 </head>
 <body>
   <header class="topbar">
@@ -147,15 +147,14 @@
         <div><b>关联搭配</b><span>商品A、商品B、商品C各为一个完整商品，名称中的+不拆分</span></div>
         <div><b>营业额区间</b><span>默认最小值20、最大值80、步长5，生成前可调整</span></div>
         <div><b>商品备注</b><span>套餐、双杯、+、＋、超大杯美式4选2</span></div>
-        <div><b>文件识别</b><span>按字段含义自动寻找数据页与表头，并支持超大Excel</span></div>
+        <div><b>文件处理</b><span>按字段含义识别超大Excel，并使用轻量通道快速导出</span></div>
       </div>
     </section>
   </main>
 
   <footer>ORA Coffee · 双平台运营报表</footer>
 
-  <script src="./vendor/xlsx.full.min.js?v=20260924-1"></script>
-  <script src="./vendor/exceljs.min.js?v=20260924-1"></script>
-  <script src="./app.js?v=20260924-1"></script>
+  <script src="./vendor/xlsx.full.min.js?v=20260924-2"></script>
+  <script src="./app.js?v=20260924-2"></script>
 </body>
 </html>

@@ -44,6 +44,7 @@ const PACKAGE_TOKENS = ["套餐", "双杯", "+", "＋", "超大杯美式4选2"];
 const PRODUCT_ALIASES = new Map([
   ["超大杯美式·红宝石瑰夏（双杯套餐）", "超大杯美式·红宝石瑰夏（双杯）"],
 ]);
+const ZH_COLLATOR = new Intl.Collator("zh-CN");
 const ELE_ADDONS = new Set([
   "加长白山天然椴树蜜", "浓缩加份", "加手作祁红茉香茶蜜", "黄油牛乳", "咸芝士奶盖（分装）",
   "加牛奶", "加燕麦奶", "浓度加份", "黄油香草厚乳", "加椰浆",
@@ -201,19 +202,26 @@ async function loadBulkFiles(files) {
   const loaded = [];
   const failed = [];
   try {
-    for (let index = 0; index < excelFiles.length; index += 1) {
-      const file = excelFiles[index];
-      els.bulkDropzone.querySelector(".bulk-action").textContent = `正在识别 ${index + 1} / ${excelFiles.length}`;
-      let matched = false;
-      try {
-        const identified = await parseWorkbook(file, Object.entries(FILE_SPECS));
-        applyLoadedFile(identified.key, file, identified.parsed);
-        loaded.push(FILE_SPECS[identified.key].label);
-        matched = true;
-      } catch {
-        // Report all files that do not contain a recognizable order or product dataset.
+    let completed = 0;
+    for (let start = 0; start < excelFiles.length; start += 2) {
+      const batch = excelFiles.slice(start, start + 2);
+      const results = await Promise.all(batch.map(async (file) => {
+        try {
+          const identified = await parseWorkbook(file, likelySpecEntries(file.name));
+          return { file, identified };
+        } catch (error) {
+          return { file, error };
+        } finally {
+          completed += 1;
+          els.bulkDropzone.querySelector(".bulk-action").textContent = `正在识别 ${completed} / ${excelFiles.length}`;
+        }
+      }));
+      for (const result of results) {
+        if (result.identified) {
+          applyLoadedFile(result.identified.key, result.file, result.identified.parsed);
+          loaded.push(FILE_SPECS[result.identified.key].label);
+        } else failed.push(result.file.name);
       }
-      if (!matched) failed.push(file.name);
       updateUi();
       await nextFrame();
     }
@@ -228,6 +236,13 @@ async function loadBulkFiles(files) {
     els.bulkInput.value = "";
     updateUi();
   }
+}
+
+function likelySpecEntries(filename) {
+  const entries = Object.entries(FILE_SPECS);
+  if (filename.includes("商品")) return entries.filter(([, spec]) => spec.kind === "product");
+  if (filename.includes("订单")) return entries.filter(([, spec]) => spec.kind === "order");
+  return entries;
 }
 
 async function loadFile(key, file) {
@@ -251,7 +266,8 @@ async function loadFile(key, file) {
 }
 
 async function parseWorkbook(file, specEntries) {
-  if (/\.xlsx$/i.test(file.name) && file.size >= 40 * 1024 * 1024) return parseLargeXlsx(file, specEntries);
+  const productOnly = specEntries.every(([, spec]) => spec.kind === "product");
+  if (/\.xlsx$/i.test(file.name) && (file.size >= 40 * 1024 * 1024 || productOnly)) return parseLargeXlsx(file, specEntries);
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: "array", cellDates: true, cellNF: false, cellText: false });
   let best = null;
@@ -696,7 +712,7 @@ function sortRows(rows, columns) {
     for (const column of columns) {
       const av = a[column] ?? "";
       const bv = b[column] ?? "";
-      const result = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv), "zh-CN");
+      const result = typeof av === "number" && typeof bv === "number" ? av - bv : ZH_COLLATOR.compare(String(av), String(bv));
       if (result) return result;
     }
     return 0;
@@ -773,7 +789,6 @@ function processOrders() {
   sortRows(productRows, ["日期", "平台", "门店ID", "门店名称", "小时", "商品名称"]);
   sortRows(comboRows, ["日期", "平台", "门店ID", "门店名称", "小时", "商品组合"]);
   const associations = buildAssociations(associationSeeds);
-  const dates = detail.map((row) => row["日期"]).filter(Boolean).sort();
   return {
     tables: [
       { name: "订单明细", columns: DETAIL_COLUMNS, rows: detail },
@@ -781,7 +796,7 @@ function processOrders() {
       { name: "各小时组合订单", columns: HOURLY_COMBO_COLUMNS, rows: comboRows },
       ...associations.tables,
     ],
-    dateMin: dates[0] || "", dateMax: dates.at(-1) || "",
+    dateMin: detail[0]?.["日期"] || "", dateMax: detail.at(-1)?.["日期"] || "",
     summary: `有效订单 ${detail.length.toLocaleString()} 单；剔除美团已取消 ${stats.mtExcluded.toLocaleString()} 单、饿了么订单无效 ${stats.eleExcluded.toLocaleString()} 单；${associations.note}`,
   };
 }
@@ -855,10 +870,9 @@ function processProducts() {
   }
   const rows = [...aggregated.values()].map((row) => ({ ...row, "商品销量": tidyNumber(row["商品销量"]), "商品销售额": round2(row["商品销售额"]) }));
   sortRows(rows, ["日期", "平台", "门店名称", "门店id", "商品名"]);
-  const dates = rows.map((row) => row["日期"]).filter(Boolean).sort();
   return {
     tables: [{ name: "商品汇总", columns: PRODUCT_COLUMNS, rows }],
-    dateMin: dates[0] || "", dateMax: dates.at(-1) || "",
+    dateMin: rows[0]?.["日期"] || "", dateMax: rows.at(-1)?.["日期"] || "",
     summary: `汇总 ${rows.length.toLocaleString()} 行；源数据 ${rawRows.toLocaleString()} 行；剔除非商品或零销量 ${excluded.toLocaleString()} 行`,
   };
 }
@@ -886,6 +900,7 @@ async function generateAvailableReports() {
 
   state.busy = true;
   els.generate.classList.add("loading");
+  setGenerateStatus("正在整理数据…");
   updateUi();
   try {
     for (const result of state.results) URL.revokeObjectURL(result.url);
@@ -905,6 +920,7 @@ async function generateAvailableReports() {
   } finally {
     state.busy = false;
     els.generate.classList.remove("loading");
+    setGenerateStatus("生成可用报表");
     updateUi();
   }
 }
@@ -912,42 +928,36 @@ async function generateAvailableReports() {
 function compactDate(value) { return text(value).replace(/-/g, "") || "未知日期"; }
 
 async function addResult(title, report, filename) {
-  const buffer = await buildExcel(report.tables);
+  setGenerateStatus(`正在快速导出${title}…`);
+  const buffer = await buildFastExcel(report.tables, title);
   const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   state.results.push({ title, filename, summary: report.summary, url: URL.createObjectURL(blob) });
 }
 
-async function buildExcel(tables) {
-  const workbook = new ExcelJS.Workbook();
-  workbook.creator = "ORA 双平台报表台";
-  workbook.created = new Date();
+function setGenerateStatus(label) {
+  els.generate.querySelector(".btn-label").textContent = label;
+}
+
+async function buildFastExcel(tables, title) {
+  const workbook = XLSX.utils.book_new();
+  const totalRows = tables.reduce((sum, table) => sum + table.rows.length, 0);
+  let writtenRows = 0;
   for (const table of tables) {
-    const worksheet = workbook.addWorksheet(table.name, { views: [{ state: "frozen", ySplit: 1, showGridLines: false }] });
-    worksheet.columns = table.columns.map((column) => ({ header: column, key: column, width: columnWidth(column) }));
-    worksheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: table.columns.length } };
-    const header = worksheet.getRow(1);
-    header.height = 26;
-    header.font = { name: "Microsoft YaHei", size: 10, bold: true, color: { argb: "FFFFFFFF" } };
-    header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1F4E78" } };
-    header.alignment = { horizontal: "center", vertical: "middle" };
-    for (let start = 0; start < table.rows.length; start += 2000) {
-      for (const source of table.rows.slice(start, start + 2000)) {
-        const values = {};
-        for (const column of table.columns) values[column] = column === "日期" && source[column] ? excelDate(source[column]) : source[column];
-        const row = worksheet.addRow(values);
-        row.font = { name: "Microsoft YaHei", size: 10, color: { argb: "FF202B31" } };
-        row.alignment = { vertical: "middle" };
-      }
+    const worksheet = XLSX.utils.aoa_to_sheet([table.columns]);
+    for (let start = 0; start < table.rows.length; start += 10000) {
+      const matrix = table.rows.slice(start, start + 10000).map((row) => table.columns.map((column) => row[column] ?? ""));
+      XLSX.utils.sheet_add_aoa(worksheet, matrix, { origin: -1 });
+      writtenRows += matrix.length;
+      setGenerateStatus(`正在导出${title} ${Math.round(writtenRows / Math.max(totalRows, 1) * 100)}%`);
       await nextFrame();
     }
-    table.columns.forEach((column, index) => {
-      const excelColumn = worksheet.getColumn(index + 1);
-      if (column === "日期") excelColumn.numFmt = "yyyy-mm-dd";
-      if (["顾客实付", "营业额", "销售额", "商品销售额"].includes(column)) excelColumn.numFmt = "#,##0.00";
-      if (["门店ID", "门店id", "订单单号"].includes(column)) excelColumn.numFmt = "@";
-    });
+    worksheet["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: 0, c: table.columns.length - 1 } }) };
+    worksheet["!cols"] = table.columns.map((column) => ({ wch: columnWidth(column) }));
+    XLSX.utils.book_append_sheet(workbook, worksheet, table.name);
   }
-  return workbook.xlsx.writeBuffer();
+  setGenerateStatus(`正在压缩${title}…`);
+  await nextFrame();
+  return XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true });
 }
 
 function columnWidth(column) {
