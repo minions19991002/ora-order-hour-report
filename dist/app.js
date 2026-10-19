@@ -41,6 +41,7 @@ const MT_PRICE_QTY_RE = /,单价([\d.]+)\*数量(\d+(?:\.\d+)?)/g;
 const MT_ACTIVITY_PRICE_RE = /购买(.+?)原价([\d.]+)元现价([\d.]+)元/g;
 const ELE_PRICE_QTY_RE = /_(\d+(?:\.\d+)?)\*([\d.]+)/g;
 const PACKAGE_TOKENS = ["套餐", "双杯", "+", "＋", "超大杯美式4选2"];
+const PACKAGE_NAMES = new Set(["经典咖啡组合", "零咖饮品4选2"]);
 const PRODUCT_ALIASES = new Map([
   ["超大杯美式·红宝石瑰夏（双杯套餐）", "超大杯美式·红宝石瑰夏（双杯）"],
 ]);
@@ -639,7 +640,7 @@ function normalizeProductName(rawName) {
   return PRODUCT_ALIASES.get(name) || name;
 }
 
-function isPackage(name) { return PACKAGE_TOKENS.some((token) => name.includes(token)); }
+function isPackage(name) { return PACKAGE_NAMES.has(text(name)) || PACKAGE_TOKENS.some((token) => name.includes(token)); }
 
 function parseMeituanActivity(raw) {
   const prices = new Map();
