@@ -945,9 +945,16 @@ async function buildFastExcel(tables, title) {
   let writtenRows = 0;
   for (const table of tables) {
     const worksheet = XLSX.utils.aoa_to_sheet([table.columns]);
+    const dateColumnIndex = table.columns.indexOf("日期");
     for (let start = 0; start < table.rows.length; start += 10000) {
-      const matrix = table.rows.slice(start, start + 10000).map((row) => table.columns.map((column) => row[column] ?? ""));
-      XLSX.utils.sheet_add_aoa(worksheet, matrix, { origin: -1 });
+      const matrix = table.rows.slice(start, start + 10000).map((row) => table.columns.map((column) => exportCellValue(column, row[column])));
+      XLSX.utils.sheet_add_aoa(worksheet, matrix, { origin: -1, cellDates: true, dateNF: "yyyy-mm-dd" });
+      if (dateColumnIndex >= 0) {
+        for (let index = 0; index < matrix.length; index += 1) {
+          const cell = worksheet[XLSX.utils.encode_cell({ r: start + index + 1, c: dateColumnIndex })];
+          if (cell) cell.z = "yyyy-mm-dd";
+        }
+      }
       writtenRows += matrix.length;
       setGenerateStatus(`正在导出${title} ${Math.round(writtenRows / Math.max(totalRows, 1) * 100)}%`);
       await nextFrame();
@@ -958,7 +965,14 @@ async function buildFastExcel(tables, title) {
   }
   setGenerateStatus(`正在压缩${title}…`);
   await nextFrame();
-  return XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true });
+  return XLSX.write(workbook, { bookType: "xlsx", type: "array", compression: true, cellDates: true });
+}
+
+function exportCellValue(column, value) {
+  if (column !== "日期" || value === null || value === undefined || value === "") return value ?? "";
+  const normalized = dateText(value);
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : value;
 }
 
 function columnWidth(column) {
