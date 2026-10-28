@@ -42,6 +42,7 @@ const MT_ACTIVITY_PRICE_RE = /购买(.+?)原价([\d.]+)元现价([\d.]+)元/g;
 const ELE_PRICE_QTY_RE = /_(\d+(?:\.\d+)?)\*([\d.]+)/g;
 const PACKAGE_TOKENS = ["套餐", "双杯", "+", "＋", "超大杯美式4选2"];
 const PACKAGE_NAMES = new Set(["经典咖啡组合", "零咖饮品4选2"]);
+const ELE_PROTECTED_HYPHEN_PREFIXES = ["1元福利-"];
 const PRODUCT_ALIASES = new Map([
   ["超大杯美式·红宝石瑰夏（双杯套餐）", "超大杯美式·红宝石瑰夏（双杯）"],
 ]);
@@ -632,12 +633,72 @@ function updateBucketPreview() {
   }
 }
 
-function normalizeProductName(rawName) {
+function stripTrailingAttributeBrackets(rawName) {
   let name = text(rawName);
-  name = name.replace(/-\d+人份\[[^\]]+\]$/, "").trim();
-  name = name.replace(/-(?:\d+人份|个|片|盒|袋|标准|标杯|大杯|470ml|澳白杯)(?:\([^)]*\))?(?:\[[^\]]*\])?$/, "").trim();
-  name = name.replace(/\[[^\]]+\]$/, "").trim();
+  while (name.endsWith("]")) {
+    let depth = 0;
+    let openingIndex = -1;
+    for (let index = name.length - 1; index >= 0; index -= 1) {
+      if (name[index] === "]") depth += 1;
+      else if (name[index] === "[") {
+        depth -= 1;
+        if (depth === 0) { openingIndex = index; break; }
+      }
+    }
+    if (openingIndex < 0) break;
+    const content = name.slice(openingIndex + 1, -1);
+    if (!content.includes(":") && !content.includes("：")) break;
+    name = name.slice(0, openingIndex).trim();
+  }
+  return name;
+}
+
+function stripFinalOuterParenthesis(rawName) {
+  const name = text(rawName);
+  const closing = name.at(-1);
+  const opening = closing === ")" ? "(" : closing === "）" ? "（" : "";
+  if (!opening) return name;
+  let depth = 0;
+  for (let index = name.length - 1; index >= 0; index -= 1) {
+    if (name[index] === closing) depth += 1;
+    else if (name[index] === opening) {
+      depth -= 1;
+      if (depth === 0) return name.slice(0, index).trim();
+    }
+  }
+  return name;
+}
+
+function stripEleTopLevelHyphen(rawName) {
+  const name = text(rawName);
+  const protectedIndices = new Set(ELE_PROTECTED_HYPHEN_PREFIXES
+    .filter((prefix) => name.startsWith(prefix))
+    .map((prefix) => prefix.length - 1));
+  let roundDepth = 0;
+  let squareDepth = 0;
+  for (let index = 0; index < name.length; index += 1) {
+    const character = name[index];
+    if (character === "(" || character === "（") roundDepth += 1;
+    else if ((character === ")" || character === "）") && roundDepth > 0) roundDepth -= 1;
+    else if (character === "[" || character === "【") squareDepth += 1;
+    else if ((character === "]" || character === "】") && squareDepth > 0) squareDepth -= 1;
+    else if (character === "-" && roundDepth === 0 && squareDepth === 0 && !protectedIndices.has(index)) return name.slice(0, index).trim();
+  }
+  return name;
+}
+
+function normalizeMeituanProductName(rawName) {
+  const name = stripFinalOuterParenthesis(stripTrailingAttributeBrackets(rawName));
   return PRODUCT_ALIASES.get(name) || name;
+}
+
+function normalizeEleProductName(rawName) {
+  const name = stripEleTopLevelHyphen(stripTrailingAttributeBrackets(rawName));
+  return PRODUCT_ALIASES.get(name) || name;
+}
+
+function normalizeProductName(rawName, platform = "饿了么") {
+  return platform === "美团" ? normalizeMeituanProductName(rawName) : normalizeEleProductName(rawName);
 }
 
 function isPackage(name) { return PACKAGE_NAMES.has(text(name)) || PACKAGE_TOKENS.some((token) => name.includes(token)); }
@@ -646,7 +707,7 @@ function parseMeituanActivity(raw) {
   const prices = new Map();
   const source = text(raw);
   MT_ACTIVITY_PRICE_RE.lastIndex = 0;
-  for (const match of source.matchAll(MT_ACTIVITY_PRICE_RE)) prices.set(match[1].trim(), number(match[2]));
+  for (const match of source.matchAll(MT_ACTIVITY_PRICE_RE)) prices.set(normalizeMeituanProductName(match[1]), number(match[2]));
   return prices;
 }
 
@@ -658,7 +719,7 @@ function parseMeituanItems(rawInfo, rawActivity) {
   MT_PRICE_QTY_RE.lastIndex = 0;
   for (const match of source.matchAll(MT_PRICE_QTY_RE)) {
     const description = source.slice(cursor, match.index).replace(/^\/+/, "").trim();
-    const name = normalizeProductName(description.split("(", 1)[0].trim());
+    const name = normalizeMeituanProductName(description);
     if (name) items.push({ name, qty: number(match[2]), price: activityPrices.get(name) ?? number(match[1]) });
     cursor = match.index + match[0].length;
   }
@@ -680,7 +741,7 @@ function parseEleItems(rawInfo) {
     const rawName = source.slice(cursor, match.index).replace(/^\++/, "").trim();
     const qty = number(match[1]);
     const price = number(match[2]);
-    if (rawName && isEleProduct(rawName, price)) items.push({ name: normalizeProductName(rawName), qty, price });
+    if (rawName && isEleProduct(rawName, price)) items.push({ name: normalizeEleProductName(rawName), qty, price });
     cursor = match.index + match[0].length;
   }
   return items;
@@ -848,15 +909,15 @@ function processProducts() {
   let rawRows = 0;
   let excluded = 0;
   const sources = [
-    { key: "mtProduct", platform: "美团", product: "商品名", id: "门店id", qty: "商品销量", sales: "商品销售额" },
-    { key: "eleProduct", platform: "饿了么", product: "商品名称", id: "门店编号", qty: "销量", sales: "销售额" },
+    { key: "mtProduct", platform: "美团", product: "商品名", id: "门店id", qty: "商品销量", sales: "商品销售额", normalize: normalizeMeituanProductName },
+    { key: "eleProduct", platform: "饿了么", product: "商品名称", id: "门店编号", qty: "销量", sales: "销售额", normalize: normalizeEleProductName },
   ];
   for (const source of sources) {
     const parsed = state.parsed[source.key];
     rawRows += parsed.rawRowCount ?? parsed.rows.length;
     excluded += parsed.preExcludedCount ?? 0;
     for (const row of parsed.rows) {
-      const product = text(row[source.product]);
+      const product = source.normalize(row[source.product]);
       const qty = number(row[source.qty]);
       if (!product || product === "需要餐具" || product === "不需要餐具" || qty === 0) { excluded += 1; continue; }
       const date = dateText(row["日期"]);
@@ -1255,4 +1316,4 @@ function registerWebMcp() {
 updateUi();
 updateBucketPreview();
 registerWebMcp();
-window.__ORA_REPORT_APP__ = { state, parseMeituanItems, parseEleItems, normalizeProductName, revenueBucket, processOrders, processProducts };
+window.__ORA_REPORT_APP__ = { state, parseMeituanItems, parseEleItems, normalizeProductName, normalizeMeituanProductName, normalizeEleProductName, revenueBucket, processOrders, processProducts };
