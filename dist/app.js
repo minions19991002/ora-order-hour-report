@@ -269,7 +269,11 @@ async function loadFile(key, file) {
 
 async function parseWorkbook(file, specEntries) {
   const productOnly = specEntries.every(([, spec]) => spec.kind === "product");
-  if (/\.xlsx$/i.test(file.name) && (file.size >= 40 * 1024 * 1024 || productOnly)) return parseLargeXlsx(file, specEntries);
+  if (/\.xlsx$/i.test(file.name) && (file.size >= 12 * 1024 * 1024 || productOnly)) return parseLargeXlsx(file, specEntries);
+  return parseStandardWorkbook(file, specEntries);
+}
+
+async function parseStandardWorkbook(file, specEntries) {
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: "array", cellDates: true, cellNF: false, cellText: false });
   let best = null;
@@ -568,7 +572,10 @@ function excelDate(value) {
   if (value instanceof Date && !Number.isNaN(value.valueOf())) return value;
   if (typeof value === "number") {
     const parts = XLSX.SSF.parse_date_code(value);
-    if (parts) return new Date(parts.y, parts.m - 1, parts.d, parts.H || 0, parts.M || 0, Math.round(parts.S || 0));
+    if (parts) {
+      const fraction = ((value % 1) + 1) % 1;
+      return new Date(parts.y, parts.m - 1, parts.d, 0, 0, Math.floor(fraction * 86400));
+    }
   }
   const raw = text(value);
   const compact = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
@@ -769,6 +776,7 @@ function revenueBucket(value) {
   return `[${boundaryText(lower)},${boundaryText(upper)}${index === 0 ? "）" : ")"}`;
 }
 
+const KEY_SEPARATOR = "\u001f";
 function keyOf(parts) { return JSON.stringify(parts); }
 function sortRows(rows, columns) {
   rows.sort((a, b) => {
@@ -864,33 +872,44 @@ function processOrders() {
   };
 }
 
-function combinations(items, size) {
-  const result = [];
-  function walk(start, current) {
-    if (current.length === size) { result.push([...current]); return; }
-    for (let index = start; index <= items.length - (size - current.length); index += 1) {
-      current.push(items[index]); walk(index + 1, current); current.pop();
-    }
+function incrementAssociation(counts, key, seed, productA, productB, productC) {
+  const current = counts.get(key);
+  if (current) {
+    current.count += 1;
+    return;
   }
-  walk(0, []);
-  return result;
+  counts.set(key, {
+    date: seed.date,
+    platform: seed.platform,
+    storeId: seed.storeId,
+    storeName: seed.storeName,
+    products: productC === undefined ? [productA, productB] : [productA, productB, productC],
+    count: 1,
+  });
 }
 
 function buildAssociations(seeds) {
   const dates = [...new Set(seeds.map((row) => row.date).filter(Boolean))].sort();
   if (!dates.length) return { tables: [], note: "没有可用于关联搭配统计的日期" };
-  const tables = [];
-  for (const size of [2, 3]) {
-    const counts = new Map();
-    for (const seed of seeds) {
-      if (!seed.date || seed.names.length < size) continue;
-      for (const products of combinations(seed.names, size)) {
-        const key = keyOf([seed.date, seed.platform, seed.storeId, seed.storeName, ...products]);
-        const entry = counts.get(key) || { date: seed.date, platform: seed.platform, storeId: seed.storeId, storeName: seed.storeName, products, count: 0 };
-        entry.count += 1;
-        counts.set(key, entry);
+  const countsBySize = new Map([[2, new Map()], [3, new Map()]]);
+  for (const seed of seeds) {
+    if (!seed.date || seed.names.length < 2) continue;
+    const prefix = keyOf([seed.date, seed.platform, seed.storeId, seed.storeName]);
+    for (let first = 0; first < seed.names.length - 1; first += 1) {
+      const productA = seed.names[first];
+      for (let second = first + 1; second < seed.names.length; second += 1) {
+        const productB = seed.names[second];
+        incrementAssociation(countsBySize.get(2), `${prefix}${KEY_SEPARATOR}${productA}${KEY_SEPARATOR}${productB}`, seed, productA, productB);
+        for (let third = second + 1; third < seed.names.length; third += 1) {
+          const productC = seed.names[third];
+          incrementAssociation(countsBySize.get(3), `${prefix}${KEY_SEPARATOR}${productA}${KEY_SEPARATOR}${productB}${KEY_SEPARATOR}${productC}`, seed, productA, productB, productC);
+        }
       }
     }
+  }
+  const tables = [];
+  for (const size of [2, 3]) {
+    const counts = countsBySize.get(size);
     const productColumns = Array.from({ length: size }, (_, index) => `商品${String.fromCharCode(65 + index)}`);
     const columns = ["日期", "平台", "门店ID", "门店名称", ...productColumns, "合计", "共同出现订单数"];
     const rows = [...counts.values()].map((entry) => {
@@ -899,7 +918,11 @@ function buildAssociations(seeds) {
       row["共同出现订单数"] = entry.count;
       return row;
     });
-    rows.sort((a, b) => a["日期"].localeCompare(b["日期"]) || b["共同出现订单数"] - a["共同出现订单数"] || a["平台"].localeCompare(b["平台"], "zh-CN") || a["门店名称"].localeCompare(b["门店名称"], "zh-CN") || a["合计"].localeCompare(b["合计"], "zh-CN"));
+    rows.sort((a, b) => (a["日期"] < b["日期"] ? -1 : a["日期"] > b["日期"] ? 1 : 0)
+      || b["共同出现订单数"] - a["共同出现订单数"]
+      || (a["平台"] < b["平台"] ? -1 : a["平台"] > b["平台"] ? 1 : 0)
+      || ZH_COLLATOR.compare(a["门店名称"], b["门店名称"])
+      || ZH_COLLATOR.compare(a["合计"], b["合计"]));
     tables.push({ name: `${size}个品强关联搭配`, columns, rows });
   }
   return { tables, note: `关联搭配按${dates[0]}至${dates.at(-1)}逐日统计` };
@@ -1043,11 +1066,21 @@ function exportCellValue(column, value) {
 
 async function buildStreamingExcel(tables, title, totalRows) {
   const entries = streamingWorkbookEntries(tables, title, totalRows);
+  const compressedEntries = new Array(entries.length);
+  let nextEntry = 0;
+  async function compressNext() {
+    while (nextEntry < entries.length) {
+      const index = nextEntry;
+      nextEntry += 1;
+      const entrySpec = entries[index];
+      compressedEntries[index] = await compressZipEntry(entrySpec.name, entrySpec.stream());
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(2, entries.length) }, () => compressNext()));
   const parts = [];
   const centralParts = [];
   let offset = 0;
-  for (const entrySpec of entries) {
-    const entry = await compressZipEntry(entrySpec.name, entrySpec.stream());
+  for (const entry of compressedEntries) {
     const localHeader = zipLocalHeader(entry);
     const descriptor = zipDataDescriptor(entry);
     parts.push(localHeader, entry.blob, descriptor);
@@ -1070,17 +1103,22 @@ function streamingWorkbookEntries(tables, title, totalRows) {
   const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${worksheetRels}<Relationship Id="rId${tables.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy-mm-dd"/></numFmts><fonts count="1"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
   let writtenRows = 0;
+  let lastPercent = -1;
   return [
     { name: "[Content_Types].xml", stream: () => textStream(contentTypes) },
     { name: "_rels/.rels", stream: () => textStream(rootRels) },
     { name: "xl/workbook.xml", stream: () => textStream(workbook) },
     { name: "xl/_rels/workbook.xml.rels", stream: () => textStream(workbookRels) },
     { name: "xl/styles.xml", stream: () => textStream(styles) },
-    ...tables.map((table) => ({
-      name: `xl/worksheets/sheet${tables.indexOf(table) + 1}.xml`,
+    ...tables.map((table, index) => ({
+      name: `xl/worksheets/sheet${index + 1}.xml`,
       stream: () => worksheetXmlStream(table, (count) => {
         writtenRows += count;
-        setGenerateStatus(`正在流式导出${title} ${Math.min(99, Math.round(writtenRows / Math.max(totalRows, 1) * 100))}%`);
+        const percent = Math.min(99, Math.round(writtenRows / Math.max(totalRows, 1) * 100));
+        if (percent !== lastPercent) {
+          lastPercent = percent;
+          setGenerateStatus(`正在流式导出${title} ${percent}%`);
+        }
       }),
     })),
   ];
@@ -1088,6 +1126,8 @@ function streamingWorkbookEntries(tables, title, totalRows) {
 
 function worksheetXmlStream(table, onRows) {
   const encoder = new TextEncoder();
+  const columnNames = table.columns.map((_, index) => columnLetters(index));
+  const dateSerials = new Map();
   const lastColumn = columnLetters(table.columns.length - 1);
   const lastRow = table.rows.length + 1;
   const columns = table.columns.map((column, index) => `<col min="${index + 1}" max="${index + 1}" width="${columnWidth(column)}" customWidth="1"/>`).join("");
@@ -1104,9 +1144,9 @@ function worksheetXmlStream(table, onRows) {
         return;
       }
       if (phase === 1 && rowIndex < table.rows.length) {
-        const end = Math.min(rowIndex + 1000, table.rows.length);
+        const end = Math.min(rowIndex + 2000, table.rows.length);
         let xml = "";
-        for (let index = rowIndex; index < end; index += 1) xml += worksheetRowXml(table, table.rows[index], index + 2);
+        for (let index = rowIndex; index < end; index += 1) xml += worksheetRowXml(table, table.rows[index], index + 2, columnNames, dateSerials);
         controller.enqueue(encoder.encode(xml));
         onRows(end - rowIndex);
         rowIndex = end;
@@ -1122,15 +1162,19 @@ function worksheetXmlStream(table, onRows) {
   });
 }
 
-function worksheetRowXml(table, row, rowNumber) {
+function worksheetRowXml(table, row, rowNumber, columnNames, dateSerials) {
   let cells = "";
   for (let index = 0; index < table.columns.length; index += 1) {
     const column = table.columns[index];
     const value = row[column];
     if (value === null || value === undefined || value === "") continue;
-    const reference = `${columnLetters(index)}${rowNumber}`;
+    const reference = `${columnNames[index]}${rowNumber}`;
     if (column === "日期") {
-      const serial = excelDateSerial(value);
+      let serial = dateSerials.get(value);
+      if (serial === undefined) {
+        serial = excelDateSerial(value);
+        dateSerials.set(value, serial);
+      }
       cells += serial === null ? xmlStringCell(reference, value) : `<c r="${reference}" s="1"><v>${serial}</v></c>`;
     } else if (typeof value === "number" && Number.isFinite(value)) {
       cells += `<c r="${reference}"><v>${value}</v></c>`;
@@ -1150,8 +1194,9 @@ function xmlStringCell(reference, value) {
   return `<c r="${reference}" t="inlineStr"><is><t xml:space="preserve">${xmlEscape(value)}</t></is></c>`;
 }
 
+const XML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" };
 function xmlEscape(value) {
-  return text(value).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+  return text(value).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f&<>"']/g, (character) => XML_ESCAPES[character] || "");
 }
 
 function columnLetters(index) {
@@ -1181,19 +1226,42 @@ async function compressZipEntry(name, source) {
   return { name, nameBytes, blob, compressedSize: blob.size, uncompressedSize, crc: (crc ^ 0xffffffff) >>> 0, time: now.time, date: now.date };
 }
 
-const CRC32_TABLE = (() => {
-  const table = new Uint32Array(256);
+const CRC32_TABLES = (() => {
+  const tables = Array.from({ length: 8 }, () => new Uint32Array(256));
+  const table = tables[0];
   for (let index = 0; index < 256; index += 1) {
     let value = index;
     for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
     table[index] = value >>> 0;
   }
-  return table;
+  for (let slice = 1; slice < tables.length; slice += 1) {
+    for (let index = 0; index < 256; index += 1) {
+      const value = tables[slice - 1][index];
+      tables[slice][index] = (value >>> 8) ^ table[value & 0xff];
+    }
+  }
+  return tables;
 })();
 
 function crc32Update(crc, bytes) {
   let value = crc;
-  for (let index = 0; index < bytes.length; index += 1) value = CRC32_TABLE[(value ^ bytes[index]) & 0xff] ^ (value >>> 8);
+  let index = 0;
+  while (index + 8 <= bytes.length) {
+    value ^= bytes[index] | (bytes[index + 1] << 8) | (bytes[index + 2] << 16) | (bytes[index + 3] << 24);
+    value = CRC32_TABLES[7][value & 0xff]
+      ^ CRC32_TABLES[6][(value >>> 8) & 0xff]
+      ^ CRC32_TABLES[5][(value >>> 16) & 0xff]
+      ^ CRC32_TABLES[4][(value >>> 24) & 0xff]
+      ^ CRC32_TABLES[3][bytes[index + 4]]
+      ^ CRC32_TABLES[2][bytes[index + 5]]
+      ^ CRC32_TABLES[1][bytes[index + 6]]
+      ^ CRC32_TABLES[0][bytes[index + 7]];
+    index += 8;
+  }
+  while (index < bytes.length) {
+    value = CRC32_TABLES[0][(value ^ bytes[index]) & 0xff] ^ (value >>> 8);
+    index += 1;
+  }
   return value >>> 0;
 }
 
