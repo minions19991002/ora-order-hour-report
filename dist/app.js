@@ -940,8 +940,12 @@ function setGenerateStatus(label) {
 }
 
 async function buildFastExcel(tables, title) {
-  const workbook = XLSX.utils.book_new();
   const totalRows = tables.reduce((sum, table) => sum + table.rows.length, 0);
+  if (totalRows >= 500000) {
+    if (typeof CompressionStream === "undefined") throw new Error("当前浏览器版本不支持超大报表流式导出，请使用最新版Chrome或Edge");
+    return buildStreamingExcel(tables, title, totalRows);
+  }
+  const workbook = XLSX.utils.book_new();
   let writtenRows = 0;
   for (const table of tables) {
     const worksheet = XLSX.utils.aoa_to_sheet([table.columns]);
@@ -973,6 +977,224 @@ function exportCellValue(column, value) {
   const normalized = dateText(value);
   const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : value;
+}
+
+async function buildStreamingExcel(tables, title, totalRows) {
+  const entries = streamingWorkbookEntries(tables, title, totalRows);
+  const parts = [];
+  const centralParts = [];
+  let offset = 0;
+  for (const entrySpec of entries) {
+    const entry = await compressZipEntry(entrySpec.name, entrySpec.stream());
+    const localHeader = zipLocalHeader(entry);
+    const descriptor = zipDataDescriptor(entry);
+    parts.push(localHeader, entry.blob, descriptor);
+    centralParts.push(zipCentralHeader(entry, offset));
+    offset += localHeader.byteLength + entry.compressedSize + descriptor.byteLength;
+  }
+  const centralOffset = offset;
+  const centralSize = centralParts.reduce((sum, part) => sum + part.byteLength, 0);
+  parts.push(...centralParts, zipEndRecord(entries.length, centralSize, centralOffset));
+  return new Blob(parts, { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+}
+
+function streamingWorkbookEntries(tables, title, totalRows) {
+  const sheetOverrides = tables.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("");
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheetOverrides}</Types>`;
+  const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+  const sheets = tables.map((table, index) => `<sheet name="${xmlEscape(table.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join("");
+  const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets}</sheets></workbook>`;
+  const worksheetRels = tables.map((_, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join("");
+  const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${worksheetRels}<Relationship Id="rId${tables.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+  const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy-mm-dd"/></numFmts><fonts count="1"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  let writtenRows = 0;
+  return [
+    { name: "[Content_Types].xml", stream: () => textStream(contentTypes) },
+    { name: "_rels/.rels", stream: () => textStream(rootRels) },
+    { name: "xl/workbook.xml", stream: () => textStream(workbook) },
+    { name: "xl/_rels/workbook.xml.rels", stream: () => textStream(workbookRels) },
+    { name: "xl/styles.xml", stream: () => textStream(styles) },
+    ...tables.map((table) => ({
+      name: `xl/worksheets/sheet${tables.indexOf(table) + 1}.xml`,
+      stream: () => worksheetXmlStream(table, (count) => {
+        writtenRows += count;
+        setGenerateStatus(`正在流式导出${title} ${Math.min(99, Math.round(writtenRows / Math.max(totalRows, 1) * 100))}%`);
+      }),
+    })),
+  ];
+}
+
+function worksheetXmlStream(table, onRows) {
+  const encoder = new TextEncoder();
+  const lastColumn = columnLetters(table.columns.length - 1);
+  const lastRow = table.rows.length + 1;
+  const columns = table.columns.map((column, index) => `<col min="${index + 1}" max="${index + 1}" width="${columnWidth(column)}" customWidth="1"/>`).join("");
+  const header = table.columns.map((column, index) => xmlStringCell(`${columnLetters(index)}1`, column)).join("");
+  const prefix = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${lastColumn}${lastRow}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${columns}</cols><sheetData><row r="1">${header}</row>`;
+  const suffix = `</sheetData><autoFilter ref="A1:${lastColumn}${lastRow}"/></worksheet>`;
+  let phase = 0;
+  let rowIndex = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (phase === 0) {
+        controller.enqueue(encoder.encode(prefix));
+        phase = 1;
+        return;
+      }
+      if (phase === 1 && rowIndex < table.rows.length) {
+        const end = Math.min(rowIndex + 1000, table.rows.length);
+        let xml = "";
+        for (let index = rowIndex; index < end; index += 1) xml += worksheetRowXml(table, table.rows[index], index + 2);
+        controller.enqueue(encoder.encode(xml));
+        onRows(end - rowIndex);
+        rowIndex = end;
+        return;
+      }
+      if (phase <= 1) {
+        controller.enqueue(encoder.encode(suffix));
+        phase = 2;
+        return;
+      }
+      controller.close();
+    },
+  });
+}
+
+function worksheetRowXml(table, row, rowNumber) {
+  let cells = "";
+  for (let index = 0; index < table.columns.length; index += 1) {
+    const column = table.columns[index];
+    const value = row[column];
+    if (value === null || value === undefined || value === "") continue;
+    const reference = `${columnLetters(index)}${rowNumber}`;
+    if (column === "日期") {
+      const serial = excelDateSerial(value);
+      cells += serial === null ? xmlStringCell(reference, value) : `<c r="${reference}" s="1"><v>${serial}</v></c>`;
+    } else if (typeof value === "number" && Number.isFinite(value)) {
+      cells += `<c r="${reference}"><v>${value}</v></c>`;
+    } else cells += xmlStringCell(reference, value);
+  }
+  return `<row r="${rowNumber}">${cells}</row>`;
+}
+
+function excelDateSerial(value) {
+  const normalized = dateText(value);
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / 86400000 + 25569;
+}
+
+function xmlStringCell(reference, value) {
+  return `<c r="${reference}" t="inlineStr"><is><t xml:space="preserve">${xmlEscape(value)}</t></is></c>`;
+}
+
+function xmlEscape(value) {
+  return text(value).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
+
+function columnLetters(index) {
+  let result = "";
+  for (let value = index + 1; value > 0; value = Math.floor((value - 1) / 26)) result = String.fromCharCode((value - 1) % 26 + 65) + result;
+  return result;
+}
+
+function textStream(value) {
+  const bytes = new TextEncoder().encode(value);
+  return new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } });
+}
+
+async function compressZipEntry(name, source) {
+  const nameBytes = new TextEncoder().encode(name);
+  let crc = 0xffffffff;
+  let uncompressedSize = 0;
+  const tracked = source.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      crc = crc32Update(crc, chunk);
+      uncompressedSize += chunk.byteLength;
+      controller.enqueue(chunk);
+    },
+  }));
+  const blob = await new Response(tracked.pipeThrough(new CompressionStream("deflate-raw"))).blob();
+  const now = dosDateTime(new Date());
+  return { name, nameBytes, blob, compressedSize: blob.size, uncompressedSize, crc: (crc ^ 0xffffffff) >>> 0, time: now.time, date: now.date };
+}
+
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let index = 0; index < 256; index += 1) {
+    let value = index;
+    for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+    table[index] = value >>> 0;
+  }
+  return table;
+})();
+
+function crc32Update(crc, bytes) {
+  let value = crc;
+  for (let index = 0; index < bytes.length; index += 1) value = CRC32_TABLE[(value ^ bytes[index]) & 0xff] ^ (value >>> 8);
+  return value >>> 0;
+}
+
+function dosDateTime(value) {
+  const year = Math.max(1980, value.getFullYear());
+  return {
+    time: (value.getHours() << 11) | (value.getMinutes() << 5) | (value.getSeconds() >> 1),
+    date: ((year - 1980) << 9) | ((value.getMonth() + 1) << 5) | value.getDate(),
+  };
+}
+
+function zipLocalHeader(entry) {
+  const bytes = new Uint8Array(30 + entry.nameBytes.length);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0x04034b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 0x0808, true);
+  view.setUint16(8, 8, true);
+  view.setUint16(10, entry.time, true);
+  view.setUint16(12, entry.date, true);
+  view.setUint16(26, entry.nameBytes.length, true);
+  bytes.set(entry.nameBytes, 30);
+  return bytes;
+}
+
+function zipDataDescriptor(entry) {
+  const bytes = new Uint8Array(16);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0x08074b50, true);
+  view.setUint32(4, entry.crc, true);
+  view.setUint32(8, entry.compressedSize, true);
+  view.setUint32(12, entry.uncompressedSize, true);
+  return bytes;
+}
+
+function zipCentralHeader(entry, offset) {
+  const bytes = new Uint8Array(46 + entry.nameBytes.length);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0x02014b50, true);
+  view.setUint16(4, 20, true);
+  view.setUint16(6, 20, true);
+  view.setUint16(8, 0x0808, true);
+  view.setUint16(10, 8, true);
+  view.setUint16(12, entry.time, true);
+  view.setUint16(14, entry.date, true);
+  view.setUint32(16, entry.crc, true);
+  view.setUint32(20, entry.compressedSize, true);
+  view.setUint32(24, entry.uncompressedSize, true);
+  view.setUint16(28, entry.nameBytes.length, true);
+  view.setUint32(42, offset, true);
+  bytes.set(entry.nameBytes, 46);
+  return bytes;
+}
+
+function zipEndRecord(entryCount, centralSize, centralOffset) {
+  const bytes = new Uint8Array(22);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0x06054b50, true);
+  view.setUint16(8, entryCount, true);
+  view.setUint16(10, entryCount, true);
+  view.setUint32(12, centralSize, true);
+  view.setUint32(16, centralOffset, true);
+  return bytes;
 }
 
 function columnWidth(column) {
