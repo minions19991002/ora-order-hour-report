@@ -42,7 +42,7 @@ const MT_ACTIVITY_PRICE_RE = /购买(.+?)原价([\d.]+)元现价([\d.]+)元/g;
 const ELE_PRICE_QTY_RE = /_(\d+(?:\.\d+)?)\*([\d.]+)/g;
 const PACKAGE_TOKENS = ["套餐", "双杯", "+", "＋", "超大杯美式4选2"];
 const PACKAGE_NAMES = new Set(["经典咖啡组合", "零咖饮品4选2"]);
-const ELE_PROTECTED_HYPHEN_PREFIXES = ["1元福利-"];
+const ELE_PROTECTED_HYPHEN_PREFIX_PATTERNS = [/^\d+(?:\.\d+)?元福利-/];
 const PRODUCT_ALIASES = new Map([
   ["超大杯美式·红宝石瑰夏（双杯套餐）", "超大杯美式·红宝石瑰夏（双杯）"],
 ]);
@@ -671,8 +671,9 @@ function stripFinalOuterParenthesis(rawName) {
 
 function stripEleTopLevelHyphen(rawName) {
   const name = text(rawName);
-  const protectedIndices = new Set(ELE_PROTECTED_HYPHEN_PREFIXES
-    .filter((prefix) => name.startsWith(prefix))
+  const protectedIndices = new Set(ELE_PROTECTED_HYPHEN_PREFIX_PATTERNS
+    .map((pattern) => name.match(pattern)?.[0])
+    .filter(Boolean)
     .map((prefix) => prefix.length - 1));
   let roundDepth = 0;
   let squareDepth = 0;
