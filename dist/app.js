@@ -834,7 +834,9 @@ function processOrders() {
         "商品信息": text(row["商品信息"]), "商品组合": combo, "顾客实付": round2(number(row[source.paid])),
         "营业额": revenue, "区间": revenueBucket(revenue), "订单数": 1,
       });
-      associationSeeds.push({ date, platform: source.platform, storeId, storeName, names: [...grouped.keys()].sort((a, b) => a.localeCompare(b, "zh-CN")) });
+      const associationNames = [...new Set(items.filter((item) => item.price !== 0).map((item) => item.name))]
+        .sort((a, b) => a.localeCompare(b, "zh-CN"));
+      associationSeeds.push({ date, platform: source.platform, storeId, storeName, names: associationNames });
 
       for (const item of items) {
         const key = keyOf([date, source.platform, storeId, storeName, hour, item.name]);
@@ -925,7 +927,7 @@ function buildAssociations(seeds) {
       || ZH_COLLATOR.compare(a["合计"], b["合计"]));
     tables.push({ name: `${size}个品强关联搭配`, columns, rows });
   }
-  return { tables, note: `关联搭配按${dates[0]}至${dates.at(-1)}逐日统计` };
+  return { tables, note: `关联搭配已排除单价为0的商品，按${dates[0]}至${dates.at(-1)}逐日统计` };
 }
 
 function processProducts() {
