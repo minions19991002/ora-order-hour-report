@@ -1068,9 +1068,7 @@ async function buildFastExcel(tables, title) {
 
 function exportCellValue(column, value) {
   if (column !== "日期" || value === null || value === undefined || value === "") return value ?? "";
-  const normalized = dateText(value);
-  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : normalized;
+  return dateText(value);
 }
 
 async function buildStreamingExcel(tables, title, totalRows) {
