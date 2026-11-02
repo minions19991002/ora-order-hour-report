@@ -589,8 +589,11 @@ function excelDate(value) {
 
 function pad(value) { return String(value).padStart(2, "0"); }
 function dateText(value) {
+  const raw = text(value);
+  const leadingDate = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s]|$)/);
+  if (leadingDate) return `${leadingDate[1]}-${pad(leadingDate[2])}-${pad(leadingDate[3])}`;
   const date = excelDate(value);
-  return date ? `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` : text(value).slice(0, 10);
+  return date ? `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` : raw.slice(0, 10);
 }
 function dateTimeText(value) {
   const date = excelDate(value);
@@ -1063,7 +1066,7 @@ function exportCellValue(column, value) {
   if (column !== "日期" || value === null || value === undefined || value === "") return value ?? "";
   const normalized = dateText(value);
   const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : value;
+  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : normalized;
 }
 
 async function buildStreamingExcel(tables, title, totalRows) {
@@ -1177,7 +1180,7 @@ function worksheetRowXml(table, row, rowNumber, columnNames, dateSerials) {
         serial = excelDateSerial(value);
         dateSerials.set(value, serial);
       }
-      cells += serial === null ? xmlStringCell(reference, value) : `<c r="${reference}" s="1"><v>${serial}</v></c>`;
+      cells += serial === null ? xmlStringCell(reference, dateText(value)) : `<c r="${reference}" s="1"><v>${serial}</v></c>`;
     } else if (typeof value === "number" && Number.isFinite(value)) {
       cells += `<c r="${reference}"><v>${value}</v></c>`;
     } else cells += xmlStringCell(reference, value);
