@@ -699,7 +699,11 @@ function stripEleTopLevelHyphen(rawName) {
 }
 
 function normalizeMeituanProductName(rawName) {
-  const name = stripFinalOuterParenthesis(stripTrailingAttributeBrackets(rawName));
+  const withoutAttributes = stripTrailingAttributeBrackets(rawName);
+  const withoutFinalParenthesis = stripFinalOuterParenthesis(withoutAttributes);
+  const name = isPackage(withoutAttributes) && !isPackage(withoutFinalParenthesis)
+    ? withoutAttributes
+    : withoutFinalParenthesis;
   return PRODUCT_ALIASES.get(name) || name;
 }
 
